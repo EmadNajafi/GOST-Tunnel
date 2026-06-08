@@ -1,3 +1,3 @@
 # GOST-Tunnel
-
-`` bash <(curl -Ls https://raw.githubusercontent.com/EmadNajafi/gost-manager/main/gost-manager.sh) ``
+با استفاده از دستور زیر میتونید از اسکریپت استفاده کیدد
+```` bash <(curl -Ls https://raw.githubusercontent.com/EmadNajafi/gost-manager/main/gost-manager.sh) ````
