@@ -1,103 +1,214 @@
 #!/bin/bash
 
-SERVICE_FILE="/etc/systemd/system/gost.service"
 GOST_BIN="/usr/local/bin/gost"
-GOST_VER="2.11.1"
+SERVICE_DIR="/etc/systemd/system"
 
-function install_gost() {
-    echo "Installing dependencies..."
-    sudo apt update
-    sudo apt install wget nano -y
+install_gost() {
 
-    echo "Downloading GOST..."
-    wget "https://github.com/ginuerzh/gost/releases/download/v${GOST_VER}/gost-linux-amd64-${GOST_VER}.gz" -O "gost.gz"
-    gunzip gost.gz
-    sudo mv gost-linux-amd64-${GOST_VER} $GOST_BIN
-    sudo chmod +x $GOST_BIN
+if [ -f "$GOST_BIN" ]; then
+echo "GOST already installed."
+return
+fi
 
-    read -p "Enter local listening port: " LOCAL_PORT
-    read -p "Enter destination IP: " DEST_IP
-    read -p "Enter destination port: " DEST_PORT
+echo "Installing GOST..."
 
-    create_service "$LOCAL_PORT" "$DEST_IP" "$DEST_PORT"
+apt update
+apt install wget iptables bc -y
 
-    sudo systemctl daemon-reload
-    sudo systemctl enable gost
-    sudo systemctl restart gost
+wget -q https://github.com/ginuerzh/gost/releases/download/v2.11.1/gost-linux-amd64-2.11.1.gz
+gunzip gost-linux-amd64-2.11.1.gz
 
-    echo "GOST installed and service started."
+mv gost-linux-amd64-2.11.1 $GOST_BIN
+chmod +x $GOST_BIN
+
+echo "GOST installed successfully."
 }
 
-function create_service() {
-    local port="$1"
-    local ip="$2"
-    local dest_port="$3"
+create_tunnel() {
 
-    sudo bash -c "cat > $SERVICE_FILE" <<EOL
+read -p "Tunnel name: " NAME
+
+SERVICE_FILE="$SERVICE_DIR/gost-$NAME.service"
+
+if [ -f "$SERVICE_FILE" ]; then
+echo "Tunnel already exists."
+return
+fi
+
+read -p "Local Port: " LPORT
+read -p "Destination IP: " DIP
+read -p "Destination Port: " DPORT
+
+cat <<EOF > $SERVICE_FILE
 [Unit]
-Description=GO Simple Tunnel
+Description=GOST Tunnel $NAME
 After=network.target
-Wants=network.target
 
 [Service]
 Type=simple
-ExecStart=$GOST_BIN -L=tcp://:${port}/${ip}:${dest_port}
+ExecStart=$GOST_BIN -L=tcp://:$LPORT/$DIP:$DPORT
 Restart=always
-RestartSec=5
+RestartSec=3
+LimitNOFILE=1048576
 
 [Install]
 WantedBy=multi-user.target
-EOL
+EOF
+
+systemctl daemon-reload
+systemctl enable gost-$NAME
+systemctl start gost-$NAME
+
+iptables -I INPUT -p tcp --dport $LPORT -j ACCEPT
+iptables -I OUTPUT -p tcp --sport $LPORT -j ACCEPT
+
+echo "Tunnel created successfully."
 }
 
-function change_tunnel() {
-    if [[ ! -f "$SERVICE_FILE" ]]; then
-        echo "Service not found. Please install first."
-        return
-    fi
+edit_tunnel() {
 
-    read -p "Enter new local listening port: " LOCAL_PORT
-    read -p "Enter new destination IP: " DEST_IP
-    read -p "Enter new destination port: " DEST_PORT
+read -p "Tunnel name to edit: " NAME
+SERVICE_FILE="$SERVICE_DIR/gost-$NAME.service"
 
-    create_service "$LOCAL_PORT" "$DEST_IP" "$DEST_PORT"
-    sudo systemctl daemon-reload
-    sudo systemctl restart gost
-    echo "Tunnel updated."
+if [ ! -f "$SERVICE_FILE" ]; then
+echo "Tunnel not found."
+return
+fi
+
+echo "Current config:"
+grep ExecStart $SERVICE_FILE
+
+read -p "New Local Port: " LPORT
+read -p "New Destination IP: " DIP
+read -p "New Destination Port: " DPORT
+
+cat <<EOF > $SERVICE_FILE
+[Unit]
+Description=GOST Tunnel $NAME
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$GOST_BIN -L=tcp://:$LPORT/$DIP:$DPORT
+Restart=always
+RestartSec=3
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl restart gost-$NAME
+
+echo "Tunnel updated."
 }
 
-function remove_tunnel() {
-    sudo systemctl stop gost
-    sudo systemctl disable gost
-    sudo rm -f "$SERVICE_FILE"
-    sudo rm -f "$GOST_BIN"
-    sudo systemctl daemon-reload
-    echo "GOST and tunnel service removed."
+delete_tunnel() {
+
+read -p "Tunnel name to delete: " NAME
+
+SERVICE_FILE="$SERVICE_DIR/gost-$NAME.service"
+
+if [ ! -f "$SERVICE_FILE" ]; then
+echo "Tunnel not found."
+return
+fi
+
+PORT=$(grep ExecStart $SERVICE_FILE | sed -n 's/.*tcp:\/\/:\([0-9]*\)\/.*/\1/p')
+
+systemctl stop gost-$NAME
+systemctl disable gost-$NAME
+
+rm -f $SERVICE_FILE
+
+iptables -D INPUT -p tcp --dport $PORT -j ACCEPT
+iptables -D OUTPUT -p tcp --sport $PORT -j ACCEPT
+
+systemctl daemon-reload
+
+echo "Tunnel deleted."
 }
 
-function show_menu() {
-    echo "===== GOST Tunnel Manager ====="
-    echo "1) Install and start tunnel"
-    echo "2) Change tunnel IP/Port"
-    echo "3) Stop tunnel"
-    echo "4) Start tunnel"
-    echo "5) Remove tunnel"
-    echo "6) Check tunnel status"
-    echo "0) Exit"
-    read -p "Select an option: " choice
+restart_tunnel() {
 
-    case $choice in
-        1) install_gost ;;
-        2) change_tunnel ;;
-        3) sudo systemctl stop gost ;;
-        4) sudo systemctl start gost ;;
-        5) remove_tunnel ;;
-        6) sudo systemctl status gost ;;
-        0) exit 0 ;;
-        *) echo "Invalid option";;
-    esac
+read -p "Tunnel name: " NAME
+
+systemctl restart gost-$NAME
+
+echo "Tunnel restarted."
 }
 
-while true; do
-    show_menu
+status_tunnels() {
+
+echo "Active GOST tunnels:"
+systemctl list-units --type=service | grep gost
+
+}
+
+traffic_tunnel() {
+
+read -p "Enter tunnel local port: " PORT
+
+BYTES=$(iptables -L INPUT -v -n | grep "dpt:$PORT" | awk '{print $2}')
+
+if [ -z "$BYTES" ]; then
+echo "No traffic data found."
+return
+fi
+
+KB=$(echo "scale=2; $BYTES/1024" | bc)
+MB=$(echo "scale=2; $BYTES/1024/1024" | bc)
+GB=$(echo "scale=2; $BYTES/1024/1024/1024" | bc)
+
+echo "Traffic statistics"
+echo "------------------"
+echo "Port: $PORT"
+echo "Bytes: $BYTES"
+echo "KB: $KB"
+echo "MB: $MB"
+echo "GB: $GB"
+
+}
+
+menu() {
+
+while true
+do
+
+echo "================================"
+echo "        GOST Tunnel Manager"
+echo "================================"
+echo "1) Install GOST"
+echo "2) Create Tunnel"
+echo "3) Edit Tunnel"
+echo "4) Delete Tunnel"
+echo "5) Restart Tunnel"
+echo "6) Tunnel Status"
+echo "7) Tunnel Traffic"
+echo "0) Exit"
+echo "================================"
+
+read -p "Choose option: " CHOICE
+
+case $CHOICE in
+
+1) install_gost ;;
+2) create_tunnel ;;
+3) edit_tunnel ;;
+4) delete_tunnel ;;
+5) restart_tunnel ;;
+6) status_tunnels ;;
+7) traffic_tunnel ;;
+0) exit ;;
+*) echo "Invalid option" ;;
+
+esac
+
+echo ""
+
 done
+
+}
+
+menu
